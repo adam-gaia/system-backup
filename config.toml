@@ -1,0 +1,47 @@
+[general]
+log_level = "INFO"
+exclude = []
+timezone = "UTC"
+timestamp_fmt = "%Y/%m/%d/%T"
+relative_to = "${HOME}"
+
+[remote]
+user = "agaia"
+host = "192.168.86.40"
+destination = "/volume1/homes/agaia/backups/${hostname}/${timestamp}"
+
+[[sync]]
+path = "Desktop"
+exclude = []
+
+[[sync]]
+path = "Documents"
+exclude = []
+
+[[sync]]
+path = "Pictures"
+exclude = []
+
+[[sync]]
+path = "Data"
+exclude = []
+
+[[sync]]
+path = "Repo"
+exclude = []
+
+[[sync]]
+path = "repo" # TODO: move all stuff in repo to Repo
+exclude = []
+
+[[sync]]
+path = "Videos"
+exclude = []
+
+[[sync]]
+path = "Music"
+exclude = []
+
+[[sync]]
+path = ".config"
+exclude = []
