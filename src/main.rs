@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::net::IpAddr;
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::str::FromStr;
@@ -29,10 +30,28 @@ use varpath::environment::EnvironmentBuilder;
 use varpath::VarPath;
 use which::which;
 
+/*
+ TODO:
+   - Docs and readme
+     - document config and cli options
+   - quiet/verbose options
+   - Checks on remote for running out of space?
+   - Periodically delete old backups on remote?
+     - config option(s) for this
+     - keep X older than 1 month, Y older than 1 week, Z older than 1 hour, where the more recent have more backups
+   - subcommand to show backup dates on found remote
+   - sync to latest and timestamp
+   - better error handeling when one rsync subprocess fails. Should report all failures when finished?
+   - Batch 10 or 20 rsync transfers per subcall. make number configurable?
+   - publish new version
+   - systemd timer to run this periodically
+*/
+
 const THIS_CRATE_NAME: &'static str = env!("CARGO_PKG_NAME");
 const DEFAULT_LOG_LEVEL: &'static str = "INFO";
 const DEFAULT_TIMEZONE: &'static str = "UTC";
 const DEFAULT_TIMESTAMP_FMT: &'static str = "%Y-%m-%d_%T";
+const DEFAULT_REMOTE_PORT: u32 = 22;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about=None)]
@@ -138,10 +157,19 @@ struct SyncSettings {
     ignore_settings: IgnoreSettings,
 }
 
+fn default_remote_port() -> u32 {
+    DEFAULT_REMOTE_PORT
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct RemoteSettings {
+    // TODO if no user specified, use current user's name
     user: String,
     host: IpAddr,
+    #[serde(default = "default_remote_port")]
+    port: u32,
+    /// Path to rsync on the remote
+    rsync: Option<PathBuf>,
     destination: VarPath,
 }
 
@@ -151,6 +179,8 @@ struct Config {
     sync: Vec<SyncSettings>,
     remote: RemoteSettings,
 }
+
+// TODO: pull code out of the gigantic main into some functions
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -201,12 +231,13 @@ async fn main() -> Result<()> {
     let local_hostname = gethostname::gethostname();
     let local_hostname = local_hostname.to_str().unwrap();
 
-    let user = &remote_settings.user;
+    let remote_user = &remote_settings.user;
     let remote_host = remote_settings.host;
+    let remote_port = remote_settings.port;
     let remote = format!(
         "{user}@{remote_host}",
-        user = user,
-        remote_host = remote_host
+        user = remote_user,
+        remote_host = remote_host,
     );
 
     let timestamp = Timestamp::now().intz(&general_settings.timezone)?;
@@ -221,7 +252,6 @@ async fn main() -> Result<()> {
         .set("hostname", local_hostname)
         .build();
     let destination_dir = &remote_settings.destination.eval(&variables)?;
-
     let destination = format!(
         "{remote}:{dest_dir}/", // Trailing slash to tell rsync to put contents in this directory
         remote = remote,
@@ -332,7 +362,23 @@ async fn main() -> Result<()> {
             let result = result?;
             let source = result.path();
 
-            let mut args = vec!["--archive", "--verbose", "--compress"];
+            let port_arg = format!("--port={}", remote_port);
+            let mut args = vec![
+                &port_arg,
+                "--archive",
+                "--verbose",
+                "--compress",
+                "--mkpath",
+                "--relative",
+            ];
+
+            // Declare remote_rsync_path here so that it doesn't go out of scope before args vec
+            let mut _remote_rsync_path = String::new();
+            if let Some(remote_rsync) = &remote_settings.rsync {
+                _remote_rsync_path = format!("--rsync-path={}", remote_rsync.display());
+                args.push(&_remote_rsync_path);
+            }
+
             if rsync_dry_run {
                 args.push("--dry-run");
             }
@@ -343,7 +389,10 @@ async fn main() -> Result<()> {
             info!("Syncing {} to {}", source.display(), &destination);
             if dry_run {
                 println!("[dry-run] {:?}", cmd);
-            } else {
+            }
+            if !dry_run {
+                println!("{:?}", cmd);
+
                 // Create a oneshot to get back the status code of the child process once it finishes to our main task
                 let (tx, rx) = oneshot::channel();
 
